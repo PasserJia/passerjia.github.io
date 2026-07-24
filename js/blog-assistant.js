@@ -5,6 +5,10 @@
   const local = ['localhost', '127.0.0.1'].includes(window.location.hostname);
   const apiBase = window.BLOG_ASSISTANT_API
     || (local ? 'http://127.0.0.1:18100' : 'https://ai.passerjia.com/blog-assistant-api');
+  const id = () => crypto.randomUUID?.() || `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  const conversationKey = 'passerjia-blog-assistant-conversation';
+  let conversationId = sessionStorage.getItem(conversationKey) || id();
+  sessionStorage.setItem(conversationKey, conversationId);
 
   // Lucide icon paths, ISC licensed.
   const icons = {
@@ -73,6 +77,12 @@
     messages.appendChild(suggestions);
   }
 
+  function resetConversation() {
+    conversationId = id();
+    sessionStorage.setItem(conversationKey, conversationId);
+    welcome();
+  }
+
   function setOpen(open) {
     root.classList.toggle('is-open', open);
     launcher.setAttribute('aria-expanded', String(open));
@@ -108,9 +118,12 @@
       const response = await fetch(`${apiBase}/api/public/chat/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question: normalized })
+        body: JSON.stringify({ question: normalized, conversationId, requestId: id() })
       });
-      if (!response.ok || !response.body) throw new Error('服务暂时不可用');
+      if (!response.ok || !response.body) {
+        const problem = await response.json().catch(() => null);
+        throw new Error(problem?.message || '服务暂时不可用');
+      }
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
@@ -124,6 +137,10 @@
           const dataLine = block.match(/^data:(.+)$/m)?.[1]?.trim();
           if (!event || !dataLine) continue;
           const data = JSON.parse(dataLine);
+          if (event === 'meta' && data.conversationId) {
+            conversationId = data.conversationId;
+            sessionStorage.setItem(conversationKey, conversationId);
+          }
           if (event === 'sources') sources = data.sources || [];
           if (event === 'delta') {
             if (!started) { answer.bubble.textContent = ''; started = true; }
@@ -138,10 +155,15 @@
         const sourceList = document.createElement('div');
         sourceList.className = 'pj-chat-sources';
         sources.slice(0, 3).forEach(source => {
-          const item = document.createElement('span');
+          const item = document.createElement(source.url ? 'a' : 'span');
           item.className = 'pj-chat-source';
           item.textContent = source.heading ? `${source.title} / ${source.heading}` : source.title;
-          item.title = item.textContent;
+          item.title = `${item.textContent} · v${source.documentVersion || 1} · ${source.retrievalMethod || 'HYBRID'} · ${Math.round((source.score || 0) * 100)}%`;
+          if (source.url) {
+            item.href = source.url;
+            item.target = '_blank';
+            item.rel = 'noopener';
+          }
           sourceList.appendChild(item);
         });
         answer.wrapper.appendChild(sourceList);
@@ -157,7 +179,7 @@
   }
 
   launcher.addEventListener('click', () => setOpen(!root.classList.contains('is-open')));
-  reset.addEventListener('click', welcome);
+  reset.addEventListener('click', resetConversation);
   composer.addEventListener('submit', event => { event.preventDefault(); ask(input.value); });
   input.addEventListener('input', resizeInput);
   input.addEventListener('keydown', event => {
